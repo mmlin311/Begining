@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>尋寶雷達 - 迷宮版 v2</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    background-color: #0d0d0d;
+    color: white;
+    text-align: center;
+    font-family: 'Courier New', monospace;
+    margin: 0;
+    padding: 16px 0 24px;
+    overflow-x: hidden;
+    touch-action: none;
+    user-select: none;
+  }
+  h2 {
+    font-size: 16px;
+    letter-spacing: 0.2em;
+    color: #0f0;
+    text-shadow: 0 0 8px #0f0;
+    margin: 0 0 12px;
+    font-weight: normal;
+  }
+  canvas {
+    background-color: #000;
+    border: 1px solid #1a1a1a;
+    display: block;
+    margin: 0 auto;
+    max-width: 95vw;
+    height: auto;
+    touch-action: none;
+    outline: none;
+  }
+  #hud {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin: 10px auto;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    color: #444;
+  }
+  #hud span { color: #0a0; }
+  #hud .label { color: #333; }
+  #message-box {
+    margin: 10px auto;
+    padding: 8px 16px;
+    width: 90%;
+    max-width: 500px;
+    font-size: 13px;
+    letter-spacing: 0.08em;
+    border-radius: 3px;
+    background-color: #111;
+    border: 1px solid #1a1a1a;
+    min-height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.3s, color 0.3s;
+  }
+  .normal  { color: #444; border-color: #1a1a1a !important; }
+  .alert   { color: #0f0; border-color: #0f0 !important; text-shadow: 0 0 6px #0f0; }
+  .success { color: gold; border-color: gold !important; text-shadow: 0 0 8px gold; }
+
+  #dpad {
+    margin-top: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .dpad-row { display: flex; gap: 10px; }
+  .dpad-btn {
+    width: 58px; height: 58px;
+    font-size: 20px;
+    border-radius: 8px;
+    background-color: #161616;
+    color: #555;
+    border: 1px solid #222;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: background 0.1s, color 0.1s, border-color 0.1s;
+  }
+  .dpad-btn:active, .dpad-btn.active {
+    background-color: #1a2e1a;
+    border-color: #0f0;
+    color: #0f0;
+  }
+</style>
+</head>
+<body>
+
+<h2>[ 📡 尋寶雷達系統：迷宮探索 ]</h2>
+<canvas id="gameCanvas" width="500" height="500" tabindex="0"></canvas>
+
+<div id="hud">
+  <span class="label">探索度</span>
+  <span id="hud-explore">0%</span>
+  &nbsp;|&nbsp;
+  <span class="label">寶藏</span>
+  <span id="hud-treasure">0/1</span>
+  &nbsp;|&nbsp;
+  <span class="label">步數</span>
+  <span id="hud-steps">0</span>
+</div>
+
+<div id="message-box" class="normal">[ 系統啟動：請探索迷宮尋找寶藏 ]</div>
+
+<div id="dpad">
+  <div class="dpad-row">
+    <button id="btn-up" class="dpad-btn">▲</button>
+  </div>
+  <div class="dpad-row">
+    <button id="btn-left" class="dpad-btn">◀</button>
+    <button id="btn-down" class="dpad-btn">▼</button>
+    <button id="btn-right" class="dpad-btn">▶</button>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// LEVEL 類別：地圖資料與寶藏管理
+// ============================================================
+class Level {
+  constructor(mapData) {
+    this.ROWS = mapData.length;
+    this.COLS = mapData[0].length;
+    this.TILE = 25;
+    this.mapData = mapData.map(row => [...row]);
+    this.treasures = [];
+    this._extractTreasures();
+    this._buildMapCanvas();
+  }
+
+  _extractTreasures() {
+    for (let r = 0; r < this.ROWS; r++) {
+      for (let c = 0; c < this.COLS; c++) {
+        if (this.mapData[r][c] === 2) {
+          this.treasures.push({
+            x: c * this.TILE + this.TILE / 2,
+            y: r * this.TILE + this.TILE / 2,
+            found: false,
+            glowPhase: 0,
+            particles: []
+          });
+          this.mapData[r][c] = 0;
+        }
+      }
+    }
+  }
+
+  // ★優化1：離屏 Canvas 預渲染靜態地圖
+  _buildMapCanvas() {
+    this.mapCanvas = document.createElement('canvas');
+    this.mapCanvas.width  = this.COLS * this.TILE;
+    this.mapCanvas.height = this.ROWS * this.TILE;
+    const mc = this.mapCanvas.getContext('2d');
+
+    for (let r = 0; r < this.ROWS; r++) {
+      for (let c = 0; c < this.COLS; c++) {
+        if (this.mapData[r][c] === 1) {
+          mc.fillStyle = '#0a1a0a';
+          mc.fillRect(c * this.TILE, r * this.TILE, this.TILE, this.TILE);
+          mc.strokeStyle = '#002200';
+          mc.lineWidth = 0.5;
+          mc.strokeRect(c * this.TILE + 0.5, r * this.TILE + 0.5, this.TILE - 1, this.TILE - 1);
+        }
+      }
+    }
+  }
+
+  isWall(col, row) {
+    if (row < 0 || row >= this.ROWS || col < 0 || col >= this.COLS) return true;
+    return this.mapData[row][col] === 1;
+  }
+
+  // 取得某像素點所在的 tile
+  pixelToTile(x, y) {
+    return {
+      col: Math.floor(x / this.TILE),
+      row: Math.floor(y / this.TILE)
+    };
+  }
+
+  get totalWalkable() {
+    if (this._walkable != null) return this._walkable;
+    let cnt = 0;
+    for (let r = 0; r < this.ROWS; r++)
+      for (let c = 0; c < this.COLS; c++)
+        if (this.mapData[r][c] === 0) cnt++;
+    this._walkable = cnt;
+    return cnt;
+  }
+}
+
+// ============================================================
+// InputManager：統一管理鍵盤 + 虛擬方向鍵
+// ============================================================
+class InputManager {
+  constructor(canvas) {
+    this.keys = {};
+    const keyMap = {
+      'btn-up':    'ArrowUp',
+      'btn-down':  'ArrowDown',
+      'btn-left':  'ArrowLeft',
+      'btn-right': 'ArrowRight'
+    };
+
+    canvas.addEventListener('keydown', e => {
+      if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+        e.preventDefault();
+        this.keys[e.key] = true;
+      }
+    });
+    canvas.addEventListener('keyup', e => { this.keys[e.key] = false; });
+    canvas.addEventListener('click', () => canvas.focus());
+
+    for (const [id, key] of Object.entries(keyMap)) {
+      const btn = document.getElementById(id);
+      const press   = e => { e.preventDefault(); this.keys[key] = true;  btn.classList.add('active'); };
+      const release = e => { e.preventDefault(); this.keys[key] = false; btn.classList.remove('active'); };
+      btn.addEventListener('touchstart',  press,   { passive: false });
+      btn.addEventListener('touchend',    release, { passive: false });
+      btn.addEventListener('touchcancel', release, { passive: false });
+      btn.addEventListener('mousedown',   press);
+      btn.addEventListener('mouseup',     release);
+      btn.addEventListener('mouseleave',  release);
+    }
+  }
+}
+
+// ============================================================
+// Player 類別
+// ============================================================
+class Player {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.radius = 6;
+    this.speed = 3;
+    this.steps = 0;
+  }
+
+  // ★優化3：精確碰撞 — 遍歷矩形覆蓋的所有 tile
+  _canMoveTo(nx, ny, level) {
+    const r = this.radius - 1;
+    const T = level.TILE;
+    const minC = Math.floor((nx - r) / T);
+    const maxC = Math.floor((nx + r) / T);
+    const minR = Math.floor((ny - r) / T);
+    const maxR = Math.floor((ny + r) / T);
+    for (let row = minR; row <= maxR; row++)
+      for (let col = minC; col <= maxC; col++)
+        if (level.isWall(col, row)) return false;
+    return true;
+  }
+
+  update(keys, level) {
+    let moved = false;
+    let ny = this.y;
+    if (keys['ArrowUp'])   ny -= this.speed;
+    if (keys['ArrowDown']) ny += this.speed;
+    if (this._canMoveTo(this.x, ny, level)) { this.y = ny; moved = true; }
+
+    let nx = this.x;
+    if (keys['ArrowLeft'])  nx -= this.speed;
+    if (keys['ArrowRight']) nx += this.speed;
+    if (this._canMoveTo(nx, this.y, level)) { this.x = nx; moved = true; }
+
+    if (moved) this.steps++;
+  }
+
+  draw(ctx) {
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fillStyle = '#cc0000';
+    ctx.fill();
+    // 小光環（無 shadowBlur，改用同心圓模擬）
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius + 3, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(200,0,0,0.25)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+}
+
+// ============================================================
+// Particle 類別
+// ============================================================
+class Particle {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.vx = (Math.random() - 0.5) * 5;
+    this.vy = (Math.random() - 0.5) * 5 - 1;
+    this.life = 1.0;
+    this.size = 2 + Math.random() * 2;
+  }
+  update() {
+    this.x  += this.vx;
+    this.y  += this.vy;
+    this.vy += 0.1; // 重力
+    this.life -= 0.025;
+  }
+  draw(ctx) {
+    ctx.globalAlpha = Math.max(0, this.life);
+    ctx.fillStyle = this.life > 0.5 ? '#ffe566' : '#ff8800';
+    ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+    ctx.globalAlpha = 1;
+  }
+  get dead() { return this.life <= 0; }
+}
+
+// ============================================================
+// Game 主控類別
+// ============================================================
+class Game {
+  constructor(canvasEl) {
+    this.canvas = canvasEl;
+    this.ctx    = canvasEl.getContext('2d');
+    this.level  = new Level(MAP_DATA);
+    this.input  = new InputManager(canvasEl);
+
+    // 起始位置
+    this.player = new Player(
+      5 * this.level.TILE + this.level.TILE / 2,
+      18 * this.level.TILE + this.level.TILE / 2
+    );
+
+    this.visited   = new Set();    // ★優化4a：足跡
+    this.radarPhase = 0;           // ★優化4b：雷達脈衝相位
+    this.nearDist   = Infinity;    // 最近寶藏距離（當幀）
+    this.msgBox     = document.getElementById('message-box');
+    this.hudExplore = document.getElementById('hud-explore');
+    this.hudTreasure= document.getElementById('hud-treasure');
+    this.hudSteps   = document.getElementById('hud-steps');
+
+    canvasEl.focus();
+    this._run();
+  }
+
+  // ——————————————————————————————————
+  // 主迴圈
+  // ——————————————————————————————————
+  _run() {
+    this._update();
+    this._draw();
+    requestAnimationFrame(() => this._run());
+  }
+
+  _update() {
+    this.player.update(this.input.keys, this.level);
+
+    // 記錄足跡
+    const { col, row } = this.level.pixelToTile(this.player.x, this.player.y);
+    this.visited.add(`${col},${row}`);
+
+    // 更新粒子
+    for (const t of this.level.treasures)
+      if (t.found) t.particles = t.particles.filter(p => { p.update(); return !p.dead; });
+
+    this._checkRadar();
+    this._updateHUD();
+  }
+
+  _checkRadar() {
+    let minDist = Infinity;
+    let justFound = false;
+
+    for (const t of this.level.treasures) {
+      if (t.found) continue;
+      const d = Math.hypot(this.player.x - t.x, this.player.y - t.y);
+      if (d < 12) {
+        t.found = true;
+        // ★優化4c：爆炸粒子
+        for (let i = 0; i < 40; i++) t.particles.push(new Particle(t.x, t.y));
+        this.msgBox.innerText = '[ 🎉 SUCCESS：成功找到密室寶藏！ ]';
+        this.msgBox.className = 'success';
+        justFound = true;
+      } else {
+        minDist = Math.min(minDist, d);
+      }
+    }
+
+    this.nearDist = minDist;
+    if (!justFound) {
+      if (minDist < 80) {
+        this.msgBox.innerText = '[ ⚠ RADAR：偵測到寶藏訊號強烈！ ]';
+        this.msgBox.className = 'alert';
+      } else if (this.msgBox.className === 'alert') {
+        this.msgBox.innerText = '[ 探索迷宮中… ]';
+        this.msgBox.className = 'normal';
+      }
+    }
+  }
+
+  _updateHUD() {
+    const exploredPct = Math.round(this.visited.size / this.level.totalWalkable * 100);
+    const found = this.level.treasures.filter(t => t.found).length;
+    this.hudExplore.textContent  = exploredPct + '%';
+    this.hudTreasure.textContent = `${found}/${this.level.treasures.length}`;
+    this.hudSteps.textContent    = Math.floor(this.player.steps / 10);
+  }
+
+  // ——————————————————————————————————
+  // 渲染
+  // ——————————————————————————————————
+  _draw() {
+    const ctx = this.ctx;
+    ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // ★優化1：一次性貼預渲染地圖
+    ctx.drawImage(this.level.mapCanvas, 0, 0);
+
+    // ★優化4a：足跡（走過的地板略亮）
+    this._drawFootprints(ctx);
+
+    // ★優化4b：雷達脈衝
+    this._drawRadar(ctx);
+
+    // 寶藏繪製
+    this._drawTreasures(ctx);
+
+    // 玩家
+    this.player.draw(ctx);
+  }
+
+  _drawFootprints(ctx) {
+    const T = this.level.TILE;
+    ctx.fillStyle = 'rgba(0,40,0,0.55)';
+    for (const key of this.visited) {
+      const [c, r] = key.split(',').map(Number);
+      ctx.fillRect(c * T + 1, r * T + 1, T - 2, T - 2);
+    }
+  }
+
+  _drawRadar(ctx) {
+    if (this.nearDist === Infinity || this.nearDist >= 80) return;
+
+    const intensity = 1 - this.nearDist / 80; // 越近越強
+    // 脈衝速度隨距離加快
+    this.radarPhase += 0.03 + intensity * 0.12;
+
+    const alpha  = ((Math.sin(this.radarPhase) + 1) / 2) * 0.6 * intensity;
+    const radius = 15 + intensity * 35;
+
+    ctx.beginPath();
+    ctx.arc(this.player.x, this.player.y, radius, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0,255,0,${alpha})`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // 外圈（延遲半周期，製造擴散感）
+    const alpha2 = ((Math.sin(this.radarPhase - Math.PI) + 1) / 2) * 0.3 * intensity;
+    ctx.beginPath();
+    ctx.arc(this.player.x, this.player.y, radius * 1.6, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(0,255,0,${alpha2})`;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  }
+
+  _drawTreasures(ctx) {
+    for (const t of this.level.treasures) {
+      if (t.found) {
+        // 粒子
+        for (const p of t.particles) p.draw(ctx);
+
+        // ★優化4c：光暈呼吸（用同心圓而非 shadowBlur）
+        t.glowPhase = (t.glowPhase || 0) + 0.04;
+        const glowAlpha = (Math.sin(t.glowPhase) + 1) / 2 * 0.5;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 14, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,215,0,${glowAlpha})`;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffd700';
+        ctx.fill();
+      }
+    }
+  }
+}
+
+// ============================================================
+// 地圖資料（與原版相同）
+// ============================================================
+const MAP_DATA = [
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,0,0,0,0,0,0,2,0,1,0,0,0,0,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,1],
+  [1,0,0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,1],
+  [1,0,0,1,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,1],
+  [1,0,0,1,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,1],
+  [1,0,0,1,0,0,0,0,0,0,1,1,1,0,0,0,0,0,0,1],
+  [1,0,0,1,1,1,0,0,1,1,1,1,1,0,0,0,1,1,1,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,1,0,0,1,1,1,1,1,1],
+  [1,1,1,1,0,0,0,0,0,0,0,1,0,0,1,1,1,1,1,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,0,1,1,1,1,1,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,1,0,0,1,1,1,1,1,1],
+  [1,0,0,1,0,0,0,0,0,1,1,1,0,0,0,0,0,0,0,1],
+  [1,0,0,1,1,1,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+];
+
+// ============================================================
+// 啟動
+// ============================================================
+const canvas = document.getElementById('gameCanvas');
+new Game(canvas);
+</script>
+</body>
+</html>
